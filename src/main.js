@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { config } from './config.js';
 import { createClassic } from './classic/createClassic.js';
 import { DesktopLook } from './controls/DesktopLook.js';
@@ -14,6 +13,10 @@ import { renderModes } from './rendering/renderModes.js';
 import { AutoPerformance, GpuTimer } from './rendering/AutoPerformance.js';
 import { demoAtlas } from './rendering/sprites/AnimatedSprites.js';
 import { pulseShapes, glyphShapes } from './rendering/lab/shapeAtlas.js';
+import { SessionManager } from './xr/SessionManager.js';
+import { XRInput, INITIAL_SPEED } from './xr/input.js';
+import { SpatialFrame } from './xr/SpatialFrame.js';
+import { FloatingMenu, addRay } from './xr/FloatingMenu.js';
 import './style.css';
 
 const status = document.querySelector('#status');
@@ -23,7 +26,8 @@ try { start(); } catch (error) {
 }
 
 function start() {
-  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
+  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' });
+  renderer.setClearColor(0x000000,1);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, config.pixelRatioMax));
   renderer.xr.enabled = true;
   renderer.xr.setReferenceSpaceType('local-floor');
@@ -219,26 +223,80 @@ function start() {
     } else return;
     event.preventDefault();
   });
-  // A controller trigger toggles travel while the HTML controls are outside VR.
+  const space = new SpatialFrame(), xrInput = new XRInput();
+  const head = new THREE.Vector3(), headQuaternion = new THREE.Quaternion();
+  const forward = new THREE.Vector3(), up = new THREE.Vector3();
+  const gripVectors = [new THREE.Vector3(),new THREE.Vector3()], gripPositions=[null,null];
+  const speakerIcons=[0x70dfff,0xffa964].map(color=>{
+    const icon=new THREE.Mesh(new THREE.IcosahedronGeometry(0.035,1),new THREE.MeshBasicMaterial({color}));
+    icon.visible=false;scene.add(icon);return icon;
+  });
+  const spaceSelect=document.querySelector('#space-mode'), speakerMode=document.querySelector('#speaker-mode');
+  listen(spaceSelect,'change',()=>{space.mode=spaceSelect.value;});
+  const configureSpeakers=()=>{
+    const near=Number(document.querySelector('#speaker-near').value),rolloff=Number(document.querySelector('#speaker-rolloff').value),gain=Number(document.querySelector('#speaker-gain').value);
+    music.audio.configureSpeakers({distanceModel:document.querySelector('#speaker-model').value,near,rolloff,gain});
+    document.querySelector('#speaker-near-value').textContent=`${near.toFixed(2)} m`;
+    document.querySelector('#speaker-rolloff-value').textContent=rolloff.toFixed(2);
+    document.querySelector('#speaker-gain-value').textContent=`${gain.toFixed(2)}×`;
+  };
+  for(const id of ['speaker-model','speaker-near','speaker-rolloff','speaker-gain'])listen(document.querySelector(`#${id}`),'input',configureSpeakers);
+  const sessions=new SessionManager(renderer,document.querySelector('#vr-entry'),status,()=>music.startFromGesture(),()=>{panel.hidden=false;syncUI();});
+  const cycle=(id,direction)=>{
+    const element=document.querySelector(`#${id}`),n=element.options.length;
+    element.selectedIndex=(element.selectedIndex+direction+n)%n;element.dispatchEvent(new Event('change'));
+    if(id==='speaker-model')configureSpeakers();
+  };
+  const adjust=(id,step,direction)=>{
+    const element=document.querySelector(`#${id}`);
+    element.value=String(Math.max(Number(element.min),Math.min(Number(element.max),Number(element.value)+step*direction)));
+    element.dispatchEvent(new Event('input'));
+  };
+  const selectRow=(label,id)=>({label,value:()=>document.querySelector(`#${id}`).selectedOptions[0]?.textContent,change:d=>cycle(id,d)});
+  let menuPage='main', xrMenu;
+  const rows=()=>menuPage==='audio'?[
+    selectRow('Audio A/B','speaker-mode'),selectRow('Speaker Distance Model','speaker-model'),
+    {label:'Near Distance',value:()=>`${document.querySelector('#speaker-near').value} m`,change:d=>adjust('speaker-near',0.05,d)},
+    {label:'Rolloff',value:()=>document.querySelector('#speaker-rolloff').value,change:d=>adjust('speaker-rolloff',0.05,d)},
+    {label:'Virtual Speaker Gain',value:()=>`${document.querySelector('#speaker-gain').value}×`,change:d=>adjust('speaker-gain',0.05,d)},
+    {label:'Musique',value:()=>music.wantPlaying?'Pause':'Play',change:()=>music.wantPlaying?music.pause():void music.play()},
+    {label:'Retour',value:()=> 'XR Controls',change:()=>{menuPage='main';}},
+  ]:[
+    selectRow('Palette','palette'),selectRow('Render Mode','render-mode'),selectRow('Composition','composition'),
+    {label:'Speed',value:()=>`${travel.target.toFixed(1)} m/s`,change:d=>setSpeed(travel.target+d*1.2)},
+    {label:'Rotation',value:()=>`${rotation.selectedOptions[0].textContent} · ${rotationRate.value}°/s`,change:d=>{
+      const rates=[-30,-15,-5,0,5,15,30],current=Number(rotation.value)*Number(rotationRate.value);
+      const index=rates.indexOf(current),next=rates[(Math.max(0,index)+d+rates.length)%rates.length];
+      rotation.value=String(Math.sign(next));rotationRate.value=String(Math.abs(next));setRotation();
+    }},
+    selectRow('VR Density','xr-density'),
+    {label:'Auto Performance',value:()=>autoToggle.checked?'On':'Off',change:()=>{autoToggle.checked=!autoToggle.checked;applyProfile();}},
+    {label:'Mixed Reality',value:()=>!sessions.support['immersive-ar']?'Indisponible':sessions.mode==='immersive-ar'?'On · passer en VR':'Off · passer en MR',change:()=>{
+      if(sessions.support['immersive-ar'])void sessions.request(sessions.mode==='immersive-ar'?'immersive-vr':'immersive-ar');
+    }},
+    selectRow('Virtual Speakers · A/B','speaker-mode'),selectRow('Space · World experimental','space-mode'),
+    {label:'Audio settings',value:()=> 'Distance / Rolloff / Gain / Play',change:()=>{menuPage='audio';}},
+    {label:'Fermer',value:()=> 'X gauche',change:()=>xrMenu.hide()},
+  ];
+  xrMenu=new FloatingMenu(scene,rows,toggleDrift);
   const controllers = [renderer.xr.getController(0), renderer.xr.getController(1)];
+  const selectHandlers=[];
   for (const controller of controllers) {
-    controller.addEventListener('selectstart', toggleDrift);
+    const handler=()=>xrMenu.select(controller);selectHandlers.push(handler);
+    controller.addEventListener('selectstart',handler);addRay(controller);
     scene.add(controller);
   }
-  const vrButton = VRButton.createButton(renderer);
-  const startMusicInVR = (event) => {
-    if (event.isTrusted && vrButton.onclick && !renderer.xr.isPresenting) music.startFromGesture();
-  };
-  // Capture preserves the user gesture before VRButton requests the XR session.
-  vrButton.addEventListener('click', startMusicInVR, true);
-  document.querySelector('#vr-entry').append(vrButton);
   const desktopStatus = window.isSecureContext
-    ? 'En VR : gâchette pour mettre le voyage en pause.'
+    ? 'XR : X gauche = menu · stick droit = vitesse · gâchette = pause hors menu.'
     : 'La VR nécessite HTTPS ou localhost. Le mode PC reste disponible.';
   status.textContent = desktopStatus;
   let lastTime = null;
   let statsTime = 0, statsFrames = 0;
   function sessionStart() {
+    setSpeed(INITIAL_SPEED);travel.speed=0;
+    space.reset();xrInput.reset();xrMenu.hide();
+    scene.background=sessions.mode==='immersive-ar'?null:new THREE.Color(0x000000);
+    renderer.setClearColor(0x000000,sessions.mode==='immersive-ar'?0:1);
     look.enabled = false;
     look.reset();
     camera.position.set(0, 0, 0);
@@ -254,6 +312,12 @@ function start() {
     lastTime = null;
   }
   function sessionEnd() {
+    xrMenu.hide();xrInput.reset();space.reset();space.apply(attractor.points);
+    if(volumetric)space.apply(volumetric.points,0);
+    music.audio.updateSpeakers(false);
+    for(const icon of speakerIcons)icon.visible=false;
+    for(const controller of controllers)controller.userData.menuRay.visible=false;
+    scene.background=new THREE.Color(0x000000);renderer.setClearColor(0x000000,1);
     gpuTimer.clear();
     look.enabled = true;
     look.reset();
@@ -279,10 +343,36 @@ function start() {
     status.textContent = 'Contexte graphique perdu. Rechargez la page pour reprendre.';
   });
   let wasMeasuring = false;
-  renderer.setAnimationLoop((time) => {
+  renderer.setAnimationLoop((time,frame) => {
     const elapsed = lastTime === null ? 0 : (time - lastTime) / 1000;
     const delta = Math.min(elapsed, 0.05);
     lastTime = time;
+    const inXR=renderer.xr.isPresenting;
+    let cameraZ=camera.position.z;
+    let spatialAudio=false;
+    if(inXR && frame){
+      const reference=renderer.xr.getReferenceSpace(),session=renderer.xr.getSession();
+      const pose=frame.getViewerPose(reference);
+      if(pose && session.visibilityState==='visible'){
+        head.copy(pose.transform.position);headQuaternion.copy(pose.transform.orientation);
+        forward.set(0,0,-1).applyQuaternion(headQuaternion);up.set(0,1,0).applyQuaternion(headQuaternion);
+        const next=xrInput.update(session.inputSources,travel.target,delta,()=>xrMenu.toggle(head,headQuaternion));
+        if(next!==travel.target)setSpeed(next);
+        cameraZ=space.update(head,delta,true);space.apply(attractor.points);if(volumetric)space.apply(volumetric.points,0);
+        gripPositions.fill(null);
+        for(const source of session.inputSources){
+          const index=source.handedness==='left'?0:source.handedness==='right'?1:-1;
+          if(index<0 || !source.gripSpace)continue;
+          const grip=frame.getPose(source.gripSpace,reference);
+          if(grip){gripVectors[index].copy(grip.transform.position);gripPositions[index]=gripVectors[index];}
+        }
+        spatialAudio=speakerMode.value==='Virtual Speakers';
+        music.audio.updateSpeakers(spatialAudio,head,forward,up,gripPositions);
+        speakerIcons.forEach((icon,i)=>{icon.visible=spatialAudio && !!gripPositions[i];if(icon.visible)icon.position.copy(gripPositions[i]);});
+        xrMenu.update(delta,controllers);
+      }else{xrInput.reset();xrMenu.hide();for(const controller of controllers)controller.userData.menuRay.visible=false;}
+    }
+    if(!spatialAudio){music.audio.updateSpeakers(false);for(const icon of speakerIcons)icon.visible=false;}
     // Music is deliberately not sampled: Classic has no audio-driven uniforms.
     travel.update(delta);
     if (!renderer.xr.isPresenting) {
@@ -290,13 +380,12 @@ function start() {
       camera.position.x += (mouseX - camera.position.x) * blend;
       camera.position.y += (config.eyeHeight + mouseY - camera.position.y) * blend;
     }
-    if (mode === 'Classic Hopalong') attractor.update(delta, travel.speed, travel.rotation, camera.position.z, elapsed);
+    if (mode === 'Classic Hopalong') attractor.update(delta, travel.speed, travel.rotation, cameraZ, elapsed);
     else attractor.palette.update(elapsed);
     if (volumetric?.points.visible) {
       volumetric.update(delta, travel.speed);
       volumetric.points.rotation.z += travel.rotation * delta;
     }
-    const inXR = renderer.xr.isPresenting;
     const measure = inXR && autoToggle.checked && mode === 'Classic Hopalong' && renderer.xr.getSession()?.visibilityState === 'visible';
     if (measure !== wasMeasuring) { gpuTimer.clear(); autoPerformance.warmup(); }
     wasMeasuring = measure;
@@ -330,9 +419,13 @@ function start() {
     document.body.classList.remove('ui-hidden', 'cursor-hidden');
     renderer.xr.removeEventListener('sessionstart', sessionStart);
     renderer.xr.removeEventListener('sessionend', sessionEnd);
-    for (const controller of controllers) controller.removeEventListener('selectstart', toggleDrift);
+    controllers.forEach((controller,i)=>{
+      controller.removeEventListener('selectstart',selectHandlers[i]);const ray=controller.userData.menuRay;
+      ray.removeFromParent();ray.geometry.dispose();ray.material.dispose();controller.removeFromParent();
+    });
+    xrMenu.dispose();sessions.dispose();
+    speakerIcons.forEach(icon=>{icon.removeFromParent();icon.geometry.dispose();icon.material.dispose();});
     look.dispose();
-    vrButton.removeEventListener('click', startMusicInVR, true);
     music.dispose();
     attractor.dispose();
     volumetric?.dispose(); desktopStereo.dispose();

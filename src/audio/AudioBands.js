@@ -1,5 +1,6 @@
 import { averageBand, bandRanges, frequencyBins, rms, smoothBand } from './bandMath.js';
 import { BeatDetector } from './BeatDetector.js';
+import { VirtualSpeakers, speakerDefaults } from './VirtualSpeakers.js';
 
 /** Providers return a reused { bass, mid, treble, energy, beat } object in [0, 1]. */
 export class SilentAudioBands {
@@ -19,12 +20,13 @@ export class AudioBands {
     this.bands.beat = 0;
     this.beats = new BeatDetector(1024);
     this.elapsed = 0;
+    this.speakerSettings={...speakerDefaults};this.virtualEnabled=false;
   }
 
   // Call synchronously from a click, before awaiting any browser permission.
   activate() {
     if (!this.context) {
-      this.context = new AudioContext();
+      this.context = new AudioContext({latencyHint:'interactive'});
       this.analyser = this.context.createAnalyser();
       this.analyser.fftSize = 2048;
       this.analyser.smoothingTimeConstant = 0.55;
@@ -52,6 +54,16 @@ export class AudioBands {
     this.gain.gain.cancelScheduledValues(now);
     this.gain.gain.setValueAtTime(0, now);
     this.gain.gain.linearRampToValueAtTime(this.volume, now + 0.8);
+  }
+
+  configureSpeakers(values) { Object.assign(this.speakerSettings,values);this.speakers?.configure(values); }
+  updateSpeakers(active,head,forward,up,grips) {
+    if(active && this.context && !this.speakers){
+      this.gain.disconnect();this.speakers=new VirtualSpeakers(this.context,this.gain);
+      this.speakers.configure(this.speakerSettings);
+    }
+    if(active)this.speakers?.update(head,forward,up,grips);
+    this.speakers?.setActive(active);
   }
 
   setVolume(value) {
@@ -85,6 +97,7 @@ export class AudioBands {
   }
 
   dispose() {
+    this.speakers?.dispose();
     this.source?.disconnect();
     this.analyser?.disconnect();
     this.gain?.disconnect();

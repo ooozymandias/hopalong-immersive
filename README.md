@@ -1,15 +1,140 @@
-# V0.5 — Classic Hopalong Comfort & Render Modes
+# V0.7 — VR Controls, Mixed Reality & Virtual Speakers
 
 Le mode par défaut revient au voyage à travers des couches Hopalong 2D répétées,
 inspiré du [Barry Martin’s Hopalong Orbits Visualizer d’Iacopo Sassarini](https://iacopoapps.appspot.com/hopalongwebgl/).
 Three.js, Vite et WebXR, sans framework UI ni backend. Mode PC et Meta Quest 3.
 La musique joue indépendamment : aucune réaction des formes, couleurs ou vitesses à l’audio.
 
-## Nouveautés V0.5
+## V0.7 : contrôles XR, passthrough et enceintes virtuelles
 
-Toutes les fonctions V0.4 sont conservées. Les valeurs initiales sont désormais :
+En session VR **ou MR**, **X sur la manette gauche** ouvre/ferme un panneau 3D
+devant soi. Il reste à sa position d'ouverture ; refermer/réouvrir pour le recentrer.
+Pointer avec le rayon de l'une des manettes et cliquer avec la gâchette : moitié
+gauche d'une ligne = précédent/diminuer, moitié droite = suivant/augmenter.
+Hors menu, la gâchette conserve sa fonction pause/reprise du voyage.
+
+Le menu donne accès à Palette, Render Mode, Composition, Speed, Rotation, VR Density,
+Auto Performance, Mixed Reality, Virtual Speakers et Space. La page Audio settings
+propose l'A/B audio, les paramètres de distance/gain et Play/Pause. Aucun réglage de
+stéréoscopie PC n'est inclus. Le panneau utilise une texture canvas partagée, rafraîchie
+uniquement si le contenu change, au plus environ 7 fois/s pour les valeurs dynamiques.
+
+Le **stick droit vertical** augmente la vitesse vers le haut, la diminue vers le bas.
+Zone morte 20 %, progression jusqu'à 8 m/s par seconde de maintien, bornes 0–24 m/s.
+Relâcher conserve la consigne ; l'accélération du voyage reste amortie. Au chargement
+et à chaque entrée XR, la consigne vaut **6 m/s = 25 % du maximum**.
+Les entrées sont lues par `handedness`, depuis `XRSession.inputSources`, et non
+depuis l'ordre de connexion. X utilise un front montant : le maintenir ne répète pas.
+Le mapping suit le [profil Quest Touch](https://raw.githubusercontent.com/immersive-web/webxr-input-profiles/main/packages/registry/profiles/oculus/oculus-touch-v3.json)
+et le [module WebXR Gamepads](https://www.w3.org/TR/webxr-gamepads-module-1/).
+
+### Camera Space / World Space
+
+**Camera Space**, défaut, accompagne les translations de tête, avec amortissement,
+sans copier sa rotation. La stéréoscopie et l'orientation restent celles du casque.
+**World Space**, expérimental, garde l'origine des couches fixe dans le repère
+`local-floor` : bouger le corps change sa position relative aux motifs.
+Le voyage déplace toujours les couches et leur recyclage utilise le Z réel de la
+tête relativement au groupe. Aucun déplacement artificiel de la pose XR.
+Les transitions de repère sont amorties. Le mode écran conserve son comportement.
+
+Limite World Space : le voyage/recyclage conserve l'axe Z historique ; il ne devient
+pas une navigation infinie dans toutes les directions. Aucun ancrage persistant,
+scan de pièce, collision, occlusion par les murs ou recalage après changement de
+repère système n'est fourni. Camera Space reste le repli stable.
+
+### Mixed Reality
+
+**ENTER MR** est proposé seulement si `isSessionSupported('immersive-ar')` réussit.
+**ENTER VR** reste indépendant. En AR, `scene.background = null` et le framebuffer
+est effacé avec alpha 0 ; le contexte WebGL a un canal alpha dès sa création.
+Les formes lumineuses sont compositées sur le passthrough fourni par le runtime.
+Pas de capture caméra, d'upload, de hit-test ou de reconstruction de pièce.
+Le rendu XR natif, la résolution 0,85, la fovéation et Auto Performance sont conservés.
+
+Mixed Reality dans le panneau demande un changement de session : WebXR ne permet
+pas de convertir une session VR en AR. La session courante est terminée avant de
+demander l'autre. Si l'autorisation/l'activation utilisateur a expiré, le panneau
+écran réapparaît avec un message : cliquer **ENTER MR** ou **ENTER VR** pour continuer.
+Le refus ne provoque pas de boucle de demandes. HTTPS et le support du navigateur
+restent nécessaires. Voir [requestSession](https://developer.mozilla.org/en-US/docs/Web/API/XRSystem/requestSession).
+
+### Virtual Speakers — expérimental
+
+Le mode par défaut **Head-Locked Stereo** conserve la lecture stéréo originale.
+**Virtual Speakers** ne s'active réellement que dans une session XR visible :
+
+```text
+MediaElement → Analyser → Volume principal
+                           ├→ gain direct → sortie stéréo
+                           └→ Splitter(2)
+                               ├→ canal L → Panner mono HRTF gauche → gain suivi ┐
+                               └→ canal R → Panner mono HRTF droit  → gain suivi ┴→ gain spatial → sortie
+```
+
+Les deux sources suivent les poses **gripSpace** des manettes gauche et droite.
+L'auditeur suit position, orientation avant et verticale de la tête, dans le même
+repère XR. Une petite orbe cyan/orange matérialise chaque source suivie.
+Le rapprochement augmente naturellement le niveau jusqu'à la distance de référence ;
+au-delà, le modèle de distance l'atténue. Un canal sans grip suivi devient muet,
+son icône disparaît ; l'autre reste indépendant. Une perte de suivi de tête ou la
+sortie XR rétablit le stéréo direct. Utiliser des écouteurs pour apprécier le HRTF.
+
+Paramètres dans le panneau écran et Audio settings en XR : **Linear / Inverse**
+(Inverse par défaut), **Near Distance** 0,05–1 m (0,15 m), **Rolloff** 0–1 (1),
+**Virtual Speaker Gain** 0–2× (1×). `maxDistance` vaut 3 m. Les gains d'A/B et les
+poses audio utilisent une constante de lissage de 25 ms. L'AudioContext demande
+`latencyHint: 'interactive'`, sans décoder ou rejouer un fichier par enceinte.
+Les [modèles PannerNode](https://developer.mozilla.org/en-US/docs/Web/API/PannerNode/distanceModel)
+sont utilisés directement. Le stéréo est séparé avant les panners, jamais sommé
+en mono puis dupliqué. Un fichier mono ne contient naturellement pas de canal R séparé.
+Aucune audio-réactivité des formes n'est réintroduite. La lecture exige toujours
+une interaction et respecte la pause volontaire.
+
+## Render Lab V0.6 conservé
+
+| Render | Principe / réglages |
+| --- | --- |
+| Points / Lines / Mixed | Rendus Classic historiques, Line Density |
+| Pulse | Contours animés doucement, Pulse Shape, palette active |
+| Soft Orbs | Billboards plus grands, halo doux et faible opacité |
+| Streaks | Traînées fines sur tous les points du budget, Trail Length |
+| Comets | Têtes claires + traînées plus épaisses, Trail Length |
+| Constellations | Points et sous-ensemble de voisins locaux, Connection Density |
+| Ribbons | Segments consécutifs de l'orbite, Ribbon Width / Density / Twist |
+| Glyphs | Symboles statiques dans la structure, Glyph Shape |
+
+Pulse propose Circle, Heart, Smiley, Star, Diamond, Flower, Spiral et Random Mix.
+Glyphs propose Star, Heart, Smiley, Circle, Triangle, Diamond et Random Mix.
+Un atlas original de 512 × 64 pixels est partagé ; Random Mix distribue plusieurs
+formes simultanément, avec variations déterministes de taille, rotation et intensité.
+Les couleurs suivent la palette active. Animated Sprites/GIF reste dans **Experimental**.
+
+Comets et Streaks utilisent des quads instanciés par couche. Le mouvement apparent
+est calculé avec la projection précédente par œil, incluant caméra, rotation et
+translation ; l'historique est réinitialisé au recyclage. Les traînées s'allongent
+avec la vitesse, varient par élément et sont plafonnées à 100/140 pixels.
+Comets garde 70 % du budget en comètes et 30 % en points ; Streaks utilise tout le budget.
+**Trail Length** règle 0–3×. Aucun draw call individuel par élément.
+
+Les rubans suivent des pas réellement consécutifs, coupent les sauts >12 m et
+s'interrompent régulièrement. Jusqu'à 600 segments par couche, six subdivisions
+par segment, largeur variable, torsion douce, blending additif à faible opacité.
+Ils gardent 18 % de points en fond. **Ribbon Width** 0,02–0,6 m, **Ribbon Density**
+0–100 %, **Ribbon Twist** 0–2. Le paramètre **Render Density** 10–100 % et le budget
+Auto Performance réduisent les instances. Les extrémités suivent les coordonnées
+mathématiques ; aucune recherche de voisins arbitraires pour fabriquer les rubans.
+Les connexions Constellations réutilisent les liens locaux bornés à 2,5 m.
+
+Les rendus sont alloués à la première utilisation et leurs buffers réutilisés.
+Ribbons/Pulse/Glyphs/Comets : au plus deux dessins par couche et par œil ; Soft Orbs
+et Streaks : un. La densité et le recouvrement restent déterminants sur GPU mobile.
+
+## Réglages et confort conservés
+
+Les valeurs initiales sont désormais :
 Classic Hopalong, Random Playlist, Mixed, Line Density 25 %, Through Forms,
-Mono, séparation 216 mm, Stereo Framing Fit, vitesse Custom 15,9 m/s,
+Mono, séparation 300 mm, Stereo Framing Fit, vitesse Custom 6 m/s,
 rotation gauche à 0°/s, densités PC et VR High à 245 000.
 Hide cursor with UI et Auto Performance sont activés.
 
@@ -26,17 +151,13 @@ demi-image conserve le champ horizontal de Mono, avec davantage de champ vertica
 
 ### Comets et Animated Sprites
 
-**Comets** utilise les mêmes points GPU que Classic : tête lumineuse et traînée
-calculées dans le shader, orientées selon la projection du mouvement en profondeur.
-La longueur varie entre points et augmente au maximum de 30 % avec la vitesse.
-Aucun objet individuel supplémentaire ; taille plafonnée à 28 pixels.
-Le réglage de densité existant limite le coût de recouvrement.
+**Comets** utilise désormais le rendu instancié décrit dans Render Lab ci-dessus.
 
 **Animated Sprites**, expérimental, remplace 25, 50, 100, 150 ou 250 points par des
 billboards de 0,75 m ancrés aux couches Hopalong. Les autres points restent visibles.
 Une seule géométrie instanciée ajoute un draw call par œil, une texture atlas et
 une horloge d'animation partagées. Rotation, déplacement et recyclage sont suivis.
-Le menu de rendu doit être placé sur Animated Sprites pour les voir.
+Cocher Animated Sprites dans Experimental pour les voir ; choisir un Render principal pour sortir.
 
 Le sélecteur GIF lit le fichier **uniquement dans le navigateur**, sans envoi réseau.
 `gifuct-js` décode une fois dans un worker ; les frames sont compositées en respectant
@@ -136,7 +257,7 @@ conversion vers l’écran. Des lunettes rouge à gauche / cyan à droite sont r
 Les matrices réduisent les erreurs colorimétriques ; le ghosting dépend toujours
 de l’écran et des filtres des lunettes.
 
-**Stereo Separation** va de 0 à 300 mm (216 mm par défaut), avec un amortissement
+**Stereo Separation** va de 40 à 500 mm (300 mm par défaut), avec un amortissement
 de 0,5 seconde. Les caméras utilisent des projections décentrées, sans les faire
 loucher ; le plan de convergence est à 10 m. Les vues côte à côte adaptent leur
 rapport d’aspect à chaque demi-écran. L’interface HTML reste une interface écran.
@@ -217,13 +338,13 @@ inclus dans la compilation ; aucun service externe n’est requis pour jouer.
 | Very Slow | 0,3 |
 | Slow | 2,4 |
 | Medium | 9,6 |
-| Custom (défaut) | 15,9 |
+| Custom (défaut) | 6 |
 | Fast | 16,8 |
 | Very Fast | 24 |
 
 Le slider continu couvre 0–24 m/s par pas de 0,1. Les valeurs intermédiaires sont
 identifiées **Custom**. L’accélération est amortie sur 0,45 seconde, l’arrêt est
-immédiat. Le démarrage utilise explicitement 15,9 m/s ; Stop permet de suspendre
+immédiat. Le démarrage utilise explicitement 6 m/s ; Stop permet de suspendre
 le voyage. La rotation se règle séparément.
 
 ## Fidélité à la référence
@@ -288,7 +409,7 @@ buffers des couches recyclées sont actualisés. Auto Performance peut réduire 
 nombre de points dessinés sans réallouer ces buffers.
 
 Pixel ratio PC plafonné à 1,5 ; résolution XR à 0,85 et fovéation à 1 si disponible.
-Les points sont plafonnés à 20 pixels (28 pour Comets) ; transparence additive et recouvrement
+Les points Classic sont plafonnés à 20 pixels ; transparence additive et recouvrement
 peuvent coûter cher près d’une couche. Réduire la densité avant d’augmenter ce budget.
 Aucune garantie de cadence Quest 3 sans essai matériel.
 
@@ -303,8 +424,8 @@ Chaque œil voit les couches à leurs profondeurs réelles : vraie parallaxe
 stéréoscopique malgré les motifs plans. Le suivi de tête reste entièrement piloté
 par WebXR. La souris ne déplace pas la caméra pendant une session immersive.
 Translation et rotation sont appliquées aux couches, pas à la pose du casque.
-La gâchette suspend/reprend le voyage. Les autres réglages se choisissent sur le
-panneau avant d’entrer en VR ; quitter via le menu système pour les modifier.
+La gâchette suspend/reprend le voyage hors menu. X ouvre les contrôles XR ; le
+panneau écran conserve aussi les réglages détaillés des rendus avant l'entrée.
 Les vitesses élevées et la rotation sont conservées pour la fidélité dynamique :
 commencer avec Very Slow et Rotation Off pour vérifier son confort sur casque.
 
@@ -338,10 +459,16 @@ src/classic/visualPalettes.js      gradients, fondu et playlist de 60 secondes
 src/classic/lineGeometry.js        voisinage local et indices de segments
 src/classic/composition.js         sélection des paramètres selon la présence centrale
 src/rendering/DesktopStereo.js    stéréo écran, matrices Dubois, protection WebXR
-src/rendering/defaults.js         valeurs initiales V0.5
+src/rendering/defaults.js         valeurs initiales
 src/rendering/renderModes.js      registre des modes et contrat d'extension
 src/rendering/AutoPerformance.js  mesure GPU/CPU et hystérésis XR
 src/rendering/sprites/            sprites instanciés, atlas, décodeur GIF et worker
+src/rendering/lab/                quads groupés, rubans et atlas de formes
+src/xr/input.js                   X et stick droit, mapping par handedness
+src/xr/FloatingMenu.js            panneau 3D et raycasting
+src/xr/SessionManager.js          support et transitions VR / AR
+src/xr/SpatialFrame.js            origine Camera Space / World Space
+src/audio/VirtualSpeakers.js      splitter stéréo, deux panners et A/B
 src/controls/DesktopLook.js        regard souris
 src/audio/MusicPlayer.js           lecteur indépendant du rendu
 build/musicCatalog.js              catalogue statique des fichiers intégrés
@@ -355,12 +482,11 @@ première sélection. Les réglages Classic sont conservés lorsqu’on revient 
 
 ### Ajouter un rendu
 
-Pour ajouter Soft Orbs, Streaks, Constellations, Ribbons ou Glyphs, étendre le
-registre `renderModes.js` et fournir un rendu groupé consommant les positions
+Pour ajouter un autre rendu, étendre le registre `renderModes.js` et fournir un rendu groupé consommant les positions
 et transformations des couches, comme `AnimatedSprites`. Un mode peut partager
 les points/lignes existants ou gérer une géométrie instanciée avec `update`,
 `setCount` et `dispose`. La génération Hopalong et son worker restent indépendants.
-Ces cinq modes futurs ne sont pas implémentés dans cette version.
+Les rendus Render Lab sont implémentés dans `src/rendering/lab/`.
 
 ## GitHub Pages
 
@@ -398,3 +524,15 @@ sprites instanciés et atlas partagé, GIF transparent avec disposal 2/3 et dél
 `test/fixtures/moving-pixel.gif` est une animation minimale créée pour tester
 manuellement l'import local. Vérifier aussi H sur le canvas et les contrôles,
 Fit/Fill/Custom en Parallel et Cross-eye, et le retour à Mono après WebXR.
+
+Tests V0.6/V0.7 : extrémités des rubans, atlas distincts et partagé, historique de
+mouvement par œil, densités, fronts X, stick, suivi du repère et recyclage, rayons
+du menu, routage L/R, perte de grip et repli de changement de session refusé.
+Ces tests simulent les API XR/audio ; ils ne constituent pas un essai sur casque.
+
+Sur Quest 3 réel, vérifier : X maintenu/relâché, rayons des deux mains, stick et
+pause, déplacement physique World Space, entrée/sortie VR/MR répétée, transparence
+du passthrough, A/B avec morceau stéréo, une manette près de chaque oreille puis
+loin et hors suivi, reprise après menu système et cadence soutenue à 72 Hz.
+Le casque n'est pas disponible dans cet environnement : confort, passthrough,
+latence et rendu spatial auditif restent à valider sur le matériel.
